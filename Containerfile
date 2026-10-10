@@ -40,7 +40,7 @@ ARG NVIDIA_FLAVOR="${NVIDIA_FLAVOR:-nvidia-open}"
 FROM ghcr.io/ublue-os/akmods:${KERNEL_FLAVOR}-${FEDORA_VERSION}-${KERNEL_VERSION} AS akmods
 FROM ghcr.io/ublue-os/akmods-extra:${KERNEL_FLAVOR}-${FEDORA_VERSION}-${KERNEL_VERSION} AS akmods-extra
 FROM ghcr.io/ublue-os/akmods-${NVIDIA_FLAVOR}:${KERNEL_FLAVOR}-${FEDORA_VERSION}-${KERNEL_VERSION} AS akmods-nvidia
-FROM ghcr.io/ublue-os/brew:latest@sha256:60ada2d65891d8797beef49d8b43f2108519cbbaf04c9c7363e1a008677fcd35 AS brew
+FROM ghcr.io/ublue-os/brew:latest@sha256:2aaf87e3757466bc28d056505a651c7ca5c56fd28f6ff709b34f3f5dbc860e89 AS brew
 
 FROM scratch AS ctx
 COPY build_files /
@@ -63,17 +63,6 @@ ARG VERSION_PRETTY="${VERSION_PRETTY}"
 
 COPY system_files/desktop/shared/ system_files/desktop/${BASE_IMAGE_NAME}/ /
 RUN find /usr/share/ublue-os/docs -type f -exec setfattr -n user.component -v "ublue-docs" {} +
-
-# Pin linux-firmware to a known-good version
-RUN --mount=type=cache,dst=/var/cache \
-    --mount=type=cache,dst=/var/cache/libdnf5 \
-    --mount=type=cache,dst=/var/log \
-    --mount=type=bind,from=ctx,source=/,target=/ctx \
-    --mount=type=tmpfs,dst=/tmp \
-    dnf5 -y install --best --allowerasing \
-        "linux-firmware-${LINUX_FIRMWARE_VERSION}*" \
-        "linux-firmware-whence-${LINUX_FIRMWARE_VERSION}*" && \
-    /ctx/cleanup
 
 # Install needed firmware blobs
 RUN --mount=type=bind,src=firmware,dst=/ctx/firmware \
@@ -142,7 +131,7 @@ RUN --mount=type=cache,dst=/var/cache \
     ; fi && \
     /ctx/cleanup
 
-# Install Valve's patched Mesa, Bluez, and Xwayland
+# Install Valve's patched Mesa, and Xwayland
 RUN --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/log \
@@ -152,30 +141,25 @@ RUN --mount=type=cache,dst=/var/cache \
         pipewire-config-raop \
         mesa-va-drivers && \
     declare -A toswap=( \
-        ["copr:copr.fedorainfracloud.org:ublue-os:bazzite"]="wireplumber" \
-        ["copr:copr.fedorainfracloud.org:ublue-os:bazzite-multilib"]="bluez xorg-x11-server-Xwayland" \
         ["terra-mesa"]="mesa-filesystem" \
     ) && \
-    for repo in "${!toswap[@]}"; do \
+     for repo in "${!toswap[@]}"; do \
         for package in ${toswap[$repo]}; do dnf5 -y swap --from-repo=$repo $package $package; done; \
     done && unset -v toswap repo package && \
+    dnf5 -y swap --allowerasing \
+        --repo terra-extras \
+            xorg-x11-server-Xwayland terra-xorg-x11-server-Xwayland && \
+    dnf5 -y swap --allowerasing \
+        --repo terra-extras \
+            wireplumber terra-wireplumber && \
     dnf5 versionlock add \
-        wireplumber \
-        wireplumber-libs \
-        bluez \
-        bluez-cups \
-        bluez-libs \
-        bluez-obexd \
-        xorg-x11-server-Xwayland \
+        terra-xorg-x11-server-Xwayland \
         mesa-dri-drivers \
         mesa-filesystem \
         mesa-libEGL \
         mesa-libGL \
         mesa-libgbm \
-        mesa-vulkan-drivers \
-        NetworkManager \
-        NetworkManager-wifi \
-        NetworkManager-libnm && \
+        mesa-vulkan-drivers && \
     dnf5 --enable-repo=terra-mesa -y install \
         mesa-libEGL.i686 \
         intel-opencl \
@@ -240,7 +224,6 @@ RUN --mount=type=cache,dst=/var/cache \
         usbip \
         compsize \
         ryzenadj \
-        ddcutil \
         input-remapper \
         libinput-utils \
         i2c-tools \
@@ -281,6 +264,7 @@ RUN --mount=type=cache,dst=/var/cache \
         glow \
         gum \
         vim \
+        msedit \
         cockpit-networkmanager \
         cockpit-podman \
         cockpit-selinux \
@@ -301,12 +285,19 @@ RUN --mount=type=cache,dst=/var/cache \
         gmodpatchtool \
         bazzite-portal \
         kernel-tools \
-        ls-iommu && \
+        ls-iommu \
+        xdg-native-messaging-proxy && \
     dnf5 -y swap \
         --repo terra \
             switcheroo-control cardwire && \
     dnf5 -y install --enable-repo=terra \
         cardwire-gui && \
+    dnf5 -y swap --allowerasing \
+        --repo terra-extras \
+            ddcutil terra-ddcutil && \
+    dnf5 -y swap --allowerasing \
+        --repo terra-extras \
+            libddcutil terra-libddcutil && \
     ln -s /dev/null /etc/NetworkManager/dispatcher.d/04-iscsi && \
     systemctl mask iscsi && \
     systemctl mask systemd-remount-fs.service && \
@@ -332,7 +323,8 @@ RUN --mount=type=cache,dst=/var/cache \
         dmemcg-booster && \
     if grep -q "kinoite" <<< "${BASE_IMAGE_NAME}"; then \
         dnf5 -y install \
-            plasma-foreground-booster-dmemcg \
+            plasma-foreground-booster-dmemcg && \
+        desktop-file-edit --set-key=Hidden --set-value=true /usr/share/applications/org.kde.foreground-booster.desktop \
     ; else \
         dnf5 -y swap \
         --repo terra-extras \
@@ -449,13 +441,13 @@ RUN --mount=type=cache,dst=/var/cache \
     cp --no-dereference --preserve=links /usr/lib64/libdrm.so.2 /usr/lib64/libdrm.so && \
     sed -i 's@/usr/bin/steam@/usr/bin/bazzite-steam@g' /usr/share/applications/steam.desktop && \
     sed -i 's@Exec=steam steam://open/bigpicture@Exec=/usr/bin/bazzite-steam-bpm@g' /usr/share/applications/steam.desktop && \
-    sed -i 's|^Exec=lutris %U$|Exec=env PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python lutris %U|' /usr/share/applications/net.lutris.Lutris.desktop && \
     mkdir -p /etc/skel/.config/autostart/ && \
     cp "/usr/share/applications/steam.desktop" "/etc/skel/.config/autostart/steam.desktop" && \
     sed -i 's@/usr/bin/bazzite-steam %U@/usr/bin/bazzite-steam -silent %U@g' /etc/skel/.config/autostart/steam.desktop && \
     desktop-file-edit --set-key=Hidden --set-value=true /usr/share/applications/nvtop.desktop && \
     desktop-file-edit --set-key=Hidden --set-value=true /usr/share/applications/btop.desktop && \
     desktop-file-edit --set-key=Hidden --set-value=true /usr/share/applications/yad-icon-browser.desktop && \
+    rm /usr/share/applications/com.microsoft.edit.desktop && \
     sed -i 's/#UserspaceHID.*/UserspaceHID=true/' /etc/bluetooth/input.conf && \
     sed -i "s|grub_probe\} --target=device /\`|grub_probe} --target=device /sysroot\`|g" /usr/bin/grub2-mkconfig && \
     rm -f /usr/lib/systemd/system/service.d/50-keep-warm.conf && \
@@ -623,13 +615,26 @@ RUN --mount=type=cache,dst=/var/cache \
     systemctl enable sddm.service && \
     /ctx/cleanup
 
+# Install Steam Deck patched UPower
+RUN --mount=type=cache,dst=/var/cache \
+    --mount=type=cache,dst=/var/log \
+    --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=tmpfs,dst=/tmp \
+    dnf5 -y swap --allowerasing \
+    --repo terra-extras \
+        upower terra-upower && \
+    dnf5 versionlock add \
+        terra-upower \
+        terra-upower-libs && \
+    /ctx/cleanup
+
 # Install new packages
 RUN --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/log \
     --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
-    dnf5 -y install --enable-repo=terra \
+    dnf5 -y install --enable-repo=terra --enable-repo=terra-extras \
         jupiter-fan-control \
         jupiter-hw-support-btrfs \
         galileo-mura \
@@ -654,26 +659,17 @@ RUN --mount=type=cache,dst=/var/cache \
         qt6-qtvirtualkeyboard \
         xorg-x11-server-Xvfb \
         python-vdf \
-        python-crcmod && \
+        python-crcmod \
+        acpid && \
     if grep -q "kinoite" <<< "${BASE_IMAGE_NAME}"; then \
         dnf5 -y install --enable-repo=terra \
             plasma-applet-tdp-control \
     ; fi && \
     chmod +x /usr/share/gamescope-session-plus/gamescope-session-plus && \
-    sed -i 's/- xbox-elite/- deck/g' /usr/share/inputplumber/devices/50-steam_deck.yaml && \
     sed -i 's/LOG_LEVEL=info/LOG_LEVEL=debug/g' /usr/lib/systemd/system/inputplumber.service && \
     sed -i \
-        -e 's|mkdir -p ~/.local/share/Steam|mkdir -p ~/.local/share|g' \
-        -e 's|-C ~/.local/share/Steam|-C ~/.local/share|g' \
-        -e 's|/etc/first-boot/bootstraplinux_ubuntu12_32.tar.xz|/usr/share/gamescope-session-plus/bootstrap_steam.tar.gz|g' \
-        -e 's|steamos-session-select desktop|steamosctl switch-to-desktop-mode|' \
-        -e '/# Run steam-tweaks if exists/,+3c\    if command -v /usr/bin/bazzite-steam-brand > /dev/null; then\
-            /usr/bin/bazzite-steam-brand\
-        fi' \
-        -e 's|export CLIENTCMD="steam -gamepadui -steamos3 -steampal -steamdeck"|export CLIENTCMD="steam -gamepadui -steamos3 -steampal -steamdeck -testoobeupdater"|' \
-        -e '/^    echo "set_bootstrap=1" >> "$STEAM_BOOTSTRAP_CONFIG"$/a\    if command -v /usr/bin/bazzite-steam-brand > /dev/null; then\
-            /usr/bin/bazzite-steam-brand\
-        fi' \
+        -e 's|^export GAMESCOPE_SESSION_STEAM_BOOTSTRAP_ARCHIVE=.*$|export GAMESCOPE_SESSION_STEAM_BOOTSTRAP_ARCHIVE="/usr/share/gamescope-session-plus/bootstrap_steam.tar.gz"|' \
+        -e 's|^export GAMESCOPE_SESSION_STEAM_BOOTSTRAP_DIR=.*$|export GAMESCOPE_SESSION_STEAM_BOOTSTRAP_DIR="${HOME}/.local/share"|' \
         /usr/share/gamescope-session-plus/sessions.d/steam && \
     sed -i 's|^CLIENTCMD="opengamepadui --overlay-mode|/usr/libexec/hwsupport/non-valve-handheld-hardware \&\& CLIENTCMD="opengamepadui --accessibility disabled --overlay-mode --steam-input --steamos-manager --skip-update-pack|' /usr/share/gamescope-session-plus/sessions.d/ogui-steam && \
     git clone https://gitlab.com/evlaV/jupiter-dock-updater-bin.git \
@@ -684,19 +680,6 @@ RUN --mount=type=cache,dst=/var/cache \
     ln -s /usr/bin/steamos-logger /usr/bin/steamos-info && \
     ln -s /usr/bin/steamos-logger /usr/bin/steamos-notice && \
     ln -s /usr/bin/steamos-logger /usr/bin/steamos-warning && \
-    /ctx/cleanup
-
-# Install Steam Deck patched UPower
-RUN --mount=type=cache,dst=/var/cache \
-    --mount=type=cache,dst=/var/log \
-    --mount=type=bind,from=ctx,source=/,target=/ctx \
-    --mount=type=tmpfs,dst=/tmp \
-    dnf5 -y swap \
-    --repo copr:copr.fedorainfracloud.org:ublue-os:bazzite \
-        upower upower && \
-    dnf5 versionlock add \
-        upower \
-        upower-libs && \
     /ctx/cleanup
 
 # Install Gamescope Session Supporting changes
@@ -752,7 +735,7 @@ RUN --mount=type=cache,dst=/var/cache \
     mkdir -p /usr/lib/systemd/user/gamescope-session-plus@ogui-steam.service.wants && \
     ln -s /usr/lib/systemd/user/steamos-powerbuttond.service /usr/lib/systemd/user/gamescope-session-plus@ogui-steam.service.wants/ && \
     sed -i 's/@steam/@ogui-steam/g' /usr/lib/systemd/user/gamemode-news-hook.service && \
-    sed -i '/^\[Service\]$/a KillSignal=SIGKILL\nTimeoutStopSec=2s\nTimeoutStopFailureMode=kill' /usr/lib/systemd/user/gamemode-news-hook.service && \
+    sed -i '/^\[Service\]$/a KillSignal=SIGKILL\nSuccessExitStatus=SIGKILL\nTimeoutStopSec=2s\nTimeoutStopFailureMode=kill' /usr/lib/systemd/user/gamemode-news-hook.service && \
     systemctl enable --global steamos-manager.service && \
     systemctl enable --global steamos-manager-session-cleanup.service && \
     systemctl enable --global steamos-manager-configure-cecd.service && \
@@ -773,6 +756,8 @@ RUN --mount=type=cache,dst=/var/cache \
     systemctl disable vpower.service && \
     systemctl disable jupiter-biosupdate.service && \
     systemctl disable jupiter-controller-update.service && \
+    systemctl disable acpid.service && \
+    find /etc/acpi/events -mindepth 1 -delete && \
     dnf5 config-manager setopt skip_if_unavailable=1 && \
     /ctx/image-info && \
     /ctx/build-initramfs && \
@@ -838,6 +823,9 @@ RUN --mount=type=cache,dst=/var/cache \
     ln -s libnvidia-ml.so.1 /usr/lib64/libnvidia-ml.so && \
     dnf5 config-manager setopt "terra-mesa".enabled=0 && \
     dnf5 -y copr disable ublue-os/staging && \
+    dnf5 -y swap \
+        --repo terra-extras \
+            waydroid waydroid-nvidia && \
     /ctx/cleanup
 
 # Cleanup & Finalize
